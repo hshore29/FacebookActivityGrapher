@@ -3,12 +3,10 @@ import os
 import json
 import sqlite3
 
-def init_db():
-    db = sqlite3.connect('facebook.sql')
-    cur = db.cursor()
-    return db, cur
+from fb_sql import *
 
-TITLE_PATTERNS = [
+# Facebook Title patterns to match against in parse_title()
+_fb_title_patterns = [
     "(.+) wrote on (.+) timeline.",
     "(.+) like[ds] (.+)'s .*",
     "(.+) reacted to (.+)'s .*",
@@ -22,27 +20,53 @@ TITLE_PATTERNS = [
     "(.+) replied to (.+)",
     ]
 
-def parse_title(title):
-    names = None
-    for p in TITLE_PATTERNS:
-        match = re.search(p, title)
-        if match:
-            names = list(match.groups())
-            break
-    if names and len(names) == 2:
-        if names[1] == 'your' or ' own ' in names[1]:
-            names[1] = ME
-        else:
-            names[1] = names[1].split("'")[0]
-        return names
-    else:
-        return (ME, None)
+# List of columns in the SQLite facebook table
+_db_cols = [
+    'action', 'action_type', 'timestamp', 'description', 'person', 'with',
+    'thread', 'title', 'url', 'fbgroup', 'camera_make', 'camera_model',
+    ]
+
+def init_db():
+    """Open SQLite database, create facebook table, return connection."""
+    db = sqlite3.connect('facebook.sql')
+    cur = db.cursor()
+    cur.execute(SQL_CREATE)
+    db.commit()
+    return db, cur
+
+def parse_title(action):
+    """Extract names from an action's title and update the action in place."""
+    if action.get('title'):
+        names = None
+        # Check for matches against all defined title patterns
+        for p in _fb_title_patterns:
+            match = re.search(p, action['title'])
+            if match:
+                names = list(match.groups())
+                break
+        # If we got a match with two names, extract the names
+        if names and len(names) == 2:
+            if names[1] == 'your' or ' own ' in names[1]:
+                names[1] = ME
+            else:
+                names[1] = names[1].split("'")[0]
+            action['person'] = names[0]
+            action['with'] = names[1]
+        # If the title starts with our name, it's a self-post
+        elif action['title'].startswith(ME):
+            action['person'] = ME
+            action['with'] = None
+        # Otherwise, leave the action unchanged
+    return action
 
 def parse_data(action, data):
+    """Parse an action's data field, return action with updated vals."""
     d = data['data'][0]
+    # Post data
     if 'post' in d:
         action['action'] = 'post'
         action['description'] = d['post']
+    # Comment data
     if 'comment' in d:
         action['action'] = 'comment'
         if type(d['comment']) is str:
@@ -50,23 +74,22 @@ def parse_data(action, data):
         elif type(d['comment']) is dict:
             action['description'] = d['comment']['comment']
             action['person'] = d['comment']['author']
+    return action
 
 def parse_attachments(action, data):
+    """Parse an action's attachents field, return action with updated vals."""
     att = data['attachments'][0]['data'][0]
     # External Content
     if 'external_context' in att:
         action['description'] = att['external_context'].get('name')
         action['url'] = att['external_context'].get('url')
-        return tuple()
     # Shared Page
     if 'name' in att:
         action['description'] = att['name']
-        return tuple()
     # Life event
     if 'life_event' in att:
         action['action'] = 'life_event'
         action['description'] = att['life_event']['title']
-        return tuple()
     # Media
     if 'media' in att:
         action['url'] = att['media']['uri']
@@ -74,9 +97,32 @@ def parse_attachments(action, data):
             meta = att['media']['media_metadata']['photo_metadata']
             action['camera_make'] = meta.get('camera_make')
             action['camera_model'] = meta.get('camera_model')
-        return tuple()
+    # Notes
+    if 'note' in att:
+        action['description'] = att['note']['title']
+        action['action'] = 'note'
+    return action
 
 def process_files():
+    """Normalize contents of Facebook data files for easier processing.
+
+    Goes through each Facebook data export directory / JSON file, and
+    normalizes the list into a series of dicts with the following keys:
+    -- action / action_type: categorization of action
+    -- timestamp: Unix timestamp of action
+    -- title: FB title of action
+    -- person: FB user who did action
+    -- with: FB user who action was done with/to (parsed from title)
+    -- fbgroup: FB group action was done in
+    -- description: comment / post text, album name, group name, etc.
+    -- thread: messages-only, ID of messanger thread
+    -- url: URL of shared link or photo
+    -- camera_make / camera_model: camera metadata from photos
+    Each action dict is emitted in sequence as a generator.
+    General FB JSON structure is to have a single key, whose value is
+    a list of actions / events.
+    """
+
     # apps_and_websites
     os.chdir(FB_DIR + 'apps_and_websites')
     data = json.load(open('posts_from_apps_and_websites.json'))
@@ -84,11 +130,9 @@ def process_files():
         r = {'action': 'app_post', 'action_type': 'post', 'person': ME,
              'timestamp': row['timestamp'], 'title': row.get('title')}
         if 'data' in row:
-            parse_data(r, row)
+            r = parse_data(r, row)
         if 'attachments' in row:
-            atts = parse_attachments(r, row)
-            for a in atts:
-                yield a
+            r = parse_attachments(r, row)
         yield r
 
     # comments
@@ -177,11 +221,12 @@ def process_files():
         data = json.load(open(chat + '/message.json'))
         for row in data['messages']:
             yield {'action': 'message', 'action_type': 'message',
-                   'timestamp': row['timestamp'], 'person': row['sender_name'],
+                   'timestamp': row['timestamp_ms'],
+                   'person': row.get('sender_name'),
                    'thread': chat, 'description': row.get('content')}
 
     # photos
-    os.chdir(FB_DIR + 'photos/album')
+    os.chdir(FB_DIR + 'photos_and_videos/album')
     for album in os.listdir():
         data = json.load(open(album))
         # Photo Album
@@ -231,11 +276,9 @@ def process_files():
         r = {'action': 'post', 'action_type': 'post',
              'timestamp': row['timestamp'], 'title': row.get('title')}
         if 'data' in row:
-            parse_data(r, row)
+            r = parse_data(r, row)
         if 'attachments' in row:
-            atts = parse_attachments(r, row)
-            for a in atts:
-                yield a
+            r = parse_attachments(r, row)
         yield r
 
     # profile_information
@@ -243,31 +286,24 @@ def process_files():
     data = json.load(open('profile_update_history.json'))
     for row in data['profile_updates']:
         yield {'action': 'update_profile', 'action_type': 'update_profile',
-               'timestamp': row['timestamp'], 'title': row['title']}
-
-def clean_title(action):
-    if action.get('title'):
-        from_to = parse_title(action['title'])
-        action['person'] = from_to[0]
-        action['with'] = from_to[1]
-    return action
+               'timestamp': row['timestamp'], 'title': row.get('title')}
 
 def insert_row(cur, data):
-    cols = ['action', 'action_type', 'timestamp', 'description', 'person',
-            'with', 'thread', 'title', 'url', 'fbgroup', 'camera_make',
-            'camera_model']
-    q = 'insert into facebook (' + ','.join(cols) + ') values ('
-    q += ','.join(['?']*len(cols)) + ');'
-    row = tuple(data.get(c) for c in cols)
+    """Insert a cleaned facebook action dict into SQLite's facebook table."""
+    # Build INSERT statement
+    q = "INSERT INTO facebook (" + ','.join(_db_cols) + ") \
+         VALUES (" + ','.join(['?']*len(_db_cols)) + ");"
+    # Build record to insert
+    row = tuple(data.get(c) for c in _db_cols)
     cur.execute(q, row)
 
-def prompt_cohort(db, cur):
-    cur.execute('SELECT person FROM friends WHERE cohort IS NULL')
+def _prompt_cohort(db, cur):
+    cur.execute(SQL_GET_BLANK_COHORT)
     friends = cur.fetchall()
     for f in friends:
         name = f[0]
         cohort = input(name + ': ')
-        cur.execute('UPDATE friends SET cohort=? WHERE person=?', (cohort, name))
+        cur.execute(SQL_UPDATE_COHORT, (cohort, name))
     db.commit()
 
 if __name__ == '__main__':
@@ -279,29 +315,18 @@ if __name__ == '__main__':
     
     # Load Facebook activity into database
     for i in process_files():
-        insert_row(cur, clean_title(i))
+        insert_row(cur, parse_title(i))
     db.commit()
 
     # Try to estimate when removed friends were added
-    cur.execute("""
-INSERT INTO facebook (action, action_type, person, timestamp)
-SELECT 'accepted_est', 'friend', f.person, (
-  SELECT min(timestamp) FROM facebook
-  WHERE action != 'removed' AND (person = f.person OR with = f.person)
-    AND timestamp <= f.timestamp) AS est_date
-FROM facebook f
-WHERE action_type = 'friend' AND action = 'removed' AND est_date is not null
-""")
+    cur.execute(SQL_ESTIMATE_REMOVED_FRIENDS)
     db.commit()
-    cur.execute("""
-INSERT INTO friends (person)
-SELECT person FROM facebook WHERE action in ('accepted', 'accepted_est')
-  AND action_type = 'friend' AND person NOT IN (SELECT person FROM friends)
-""")
+
+    # Update friend mapping table
+    cur.execute(SQL_UPDATE_FRIEND_TABLE)
     db.commit()
-    populate_cohorts(db, cur)
+    _prompt_cohort(db, cur)
 
     # Convert timestamps to dates
-    cur.execute("""UPDATE facebook SET fb_date=datetime(timestamp, 'unixepoch')
-                   WHERE timestamp IS NOT NULL""")
+    cur.execute(SQL_FORMAT_DATES)
     db.commit()
