@@ -2,6 +2,11 @@ import re
 import os
 import json
 import sqlite3
+from collections import defaultdict
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 from fb_sql import *
 
@@ -26,11 +31,25 @@ _db_cols = [
     'thread', 'title', 'url', 'fbgroup', 'camera_make', 'camera_model',
     ]
 
-def init_db():
+# Facebook-style colors for drawing charts
+_colors = {
+    'post': '#4260B4',
+    'dkblue': '#192648',
+    'comment': '#8ED66F',
+    'event': '#9B0024',
+    'friend': '#D2D5DA',
+    'like': '#5885FF',
+    'message': '#008BFF',
+    'badge': '#FF0017',
+    }
+
+def init_db(parse):
     """Open SQLite database, create facebook table, return connection."""
     db = sqlite3.connect('facebook.sql')
     cur = db.cursor()
-    cur.execute(SQL_CREATE)
+    if parse:
+        cur.execute(SQL_CREATE)
+        cur.execute(SQL_DELETE)
     db.commit()
     return db, cur
 
@@ -286,8 +305,11 @@ def process_files():
     os.chdir(FB_DIR + 'profile_information')
     data = json.load(open('profile_update_history.json'))
     for row in data['profile_updates']:
-        yield {'action': 'update_profile', 'action_type': 'update_profile',
-               'timestamp': row['timestamp'], 'title': row.get('title')}
+        r = {'action': 'update_profile', 'action_type': 'update_profile',
+             'timestamp': row['timestamp'], 'title': row.get('title')}
+        if 'attachments' in row:
+            r = parse_attachments(r, row)
+        yield r
 
 def insert_row(cur, data):
     """Insert a cleaned facebook action dict into SQLite's facebook table."""
@@ -307,27 +329,132 @@ def _prompt_cohort(db, cur):
         cur.execute(SQL_UPDATE_COHORT, (cohort, name))
     db.commit()
 
+def group_by(data, group_index):
+    """Group a list of lists by the data in position i. Returns array dict."""
+    dates = set()
+    grouped = defaultdict(lambda: defaultdict(int))
+    # Group data in dictionary
+    for row in data:
+        dates.add(row[0])
+        grouped[row[group_index]][row[0]] += row[-1]
+    # Sort dates, initialize "dataframe"
+    dates = sorted(dates)
+    dataframe = {'date': dates}
+    # Loop over dates, convert data dicts to numpy arrays
+    for key, vals in grouped.items():
+        dataframe[key] = np.array([vals[d] for d in dates])
+    return dataframe
+
+def get_data(cur, query):
+    """Fetch data from database."""
+    cur.execute(query)
+    return list(cur.fetchall())
+
+def draw_chart(file_name, plotter, data, figsize, pct=False):
+    """Draw a figure using plotter function, save it as a png."""
+    # Initialize figure
+    fig, ax = plt.subplots(figsize=figsize)
+    # Set axis & tick parameters
+    ax.set_axisbelow(True)
+    ax.yaxis.grid()
+    ax.yaxis.set_tick_params(left=False, labelleft=False)
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(50))
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    # Override x-limits
+    ax.set_xlim([min(data['date']), max(data['date'])])
+    # If this is a % chart, set the tick and ylimits accordingly
+    if pct:
+        ax.yaxis.set_major_locator(ticker.MultipleLocator(0.25))
+        ax.set_ylim([0, 1])
+    # Call plotting function
+    plotter(ax, data)
+    # Draw PNG
+    plt.tight_layout()
+    fig.savefig(file_name + '.png')
+
+### Specific chart functions ###
+def posts_v_likes(ax, data):
+    """Draw stacked area chart of posts vs. likes."""
+    ax.stackplot(data['date'], data['post'] + data['comment'] + data['event'],
+                 data['like'], labels=['Posts', 'Likes'],
+                 colors=[_colors['post'], _colors['like']])
+
+def pct_likes(ax, data):
+    """Draw area chart of % likes."""
+    ax.fill_between(data['date'], data['like'] / data['total'],
+                    color=_colors['like'])
+
+def friend_count(ax, data):
+    """Draw area chart of friend count."""
+    ax.fill_between(data['date'], data['total'], color=_colors['post'])
+    ax.set_ylim([0, data['total'].max()])
+
+def grouped_friend_count(ax, data):
+    """Draw stacked area chart of friend cohort counts."""
+    ax.stackplot(data['date'], data['Ballston Spa'], data['Cornell'],
+                 data['Family'], data['Mindshare'],
+                 colors=[_colors['like'], _colors['comment'],
+                         _colors['post'], _colors['event']])
+
+def post_balance(ax, data):
+    """Draw stacked area chart of post balance (me vs. others)."""
+    ax.fill_between(data['date'], data['other']*-1, color=_colors['comment'])
+    ax.stackplot(data['date'], data['me'], data['self'],
+                 colors=[_colors['like'], _colors['post']])
+
 if __name__ == '__main__':
     # Set paths, vars, initialize database
     FB_DIR = '/Users/harry/Desktop/Chat Data/facebook-htshore/'
     ME = 'Harrison Shore'
-    os.chdir('/Users/harry/Documents/GitHub/fb_activity_graph')
-    db, cur = init_db()
-    
-    # Load Facebook activity into database
-    for i in process_files():
-        insert_row(cur, parse_title(i))
-    db.commit()
+    PARSE = True
+    CHART = True
+    base_dir = os.getcwd()
+    db, cur = init_db(PARSE)
 
-    # Try to estimate when removed friends were added
-    cur.execute(SQL_ESTIMATE_REMOVED_FRIENDS)
-    db.commit()
+    if PARSE:
+        # Load Facebook activity into database
+        for i in process_files():
+            insert_row(cur, parse_title(i))
+        db.commit()
+        os.chdir(base_dir)
 
-    # Update friend mapping table
-    cur.execute(SQL_UPDATE_FRIEND_TABLE)
-    db.commit()
-    _prompt_cohort(db, cur)
+        # Try to estimate when removed friends were added
+        cur.execute(SQL_ESTIMATE_REMOVED_FRIENDS)
+        db.commit()
 
-    # Convert timestamps to dates
-    cur.execute(SQL_FORMAT_DATES)
-    db.commit()
+        # Update friend mapping table
+        cur.execute(SQL_UPDATE_FRIEND_TABLE)
+        db.commit()
+        _prompt_cohort(db, cur)
+
+        # Convert timestamps to dates
+        cur.execute(SQL_FORMAT_DATES)
+        db.commit()
+
+    if CHART:
+        # Post vs. Likes Chart
+        data = get_data(cur, SQL_GET_ACTION_DATA)
+        actions = group_by(data, group_index=2)
+        draw_chart('figure_5', posts_v_likes, actions, (14, 7))
+
+        # Percent Likes Chart
+        excl = ['date', 'friend', 'message']
+        actions['total'] = sum([v for k, v in actions.items() if k not in excl])
+        draw_chart('figure_6', pct_likes, actions, (7, 5), pct=True)
+
+        # Post Balance Chart
+        data = [d for d in data if d[2] == 'post']
+        posts = group_by(data, group_index=1)
+        draw_chart('figure_9', post_balance, posts, (7, 5))
+
+        # Friend Charts
+        data = get_data(cur, SQL_GET_FRIEND_DATA)
+        friends = group_by(data, group_index=1)
+        for k, v in friends.items():
+            friends[k] = np.cumsum(v) if k != 'date' else v
+        friends['total'] = sum([v for k, v in friends.items() if k != 'date'])
+        draw_chart('figure_7', friend_count, friends, (7, 5))
+        draw_chart('figure_8', grouped_friend_count, friends, (7, 5))
