@@ -1,92 +1,59 @@
 import sqlite3
+from collections import defaultdict
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+
+### Get Data
 db = sqlite3.connect('facebook.sql')
 cur = db.cursor()
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-import numpy as np
-from datetime import datetime
+def group_by(data, group_index):
+    dates = set()
+    grouped = defaultdict(lambda: defaultdict(int))
+    for row in data:
+        dates.add(row[0])
+        grouped[row[group_index]][row[0]] += row[-1]
+    dates = sorted(dates)
+    dataframe = {'date': dates}
+    for key, vals in grouped.items():
+        dataframe[key] = np.array([vals[d] for d in dates])
+    return dataframe
 
-### Get Data
-# Post Type data
 cur.execute("""
-select
-  --substr(date(fb_date), 0, 8)
-  cast(strftime("%Y", fb_date) as FLOAT) +
-  ((cast(strftime("%m", fb_date) as INT) - 1) / 3) / 4.0 as quarter,
-  sum(case when action_type = 'like' then 1 else 0 end),
-  sum(case when action_type = 'event' then 1 else 0 end),
-  sum(case when action_type = 'friend' then 1 else 0 end),
-  sum(case when action_type = 'post' and action = 'comment' then 1 else 0 end),
-  sum(case when action_type = 'post' and action != 'comment' then 1 else 0 end),
-  count(*)
-from facebook
-where action not in ("album_photo", "message") and fb_date is not null
-group by quarter""")
-data = np.array(cur.fetchall(), dtype=[
-    ('date', 'float'),
-    ('like', 'i4'),
-    ('event', 'i4'),
-    ('friend', 'i4'),
-    ('comment', 'i4'),
-    ('post', 'i4'),
-    ('total', 'i4'),
-    ])
+SELECT
+  cast(strftime("%Y", fb_date) AS FLOAT) +
+    ((cast(strftime("%m", fb_date) AS INT) - 1) / 3) / 4.0 AS quarter,
+  CASE WHEN person = 'Harrison Shore' THEN
+      CASE WHEN with IS NULL THEN 'self' ELSE 'me' END
+  ELSE 'other' END AS person1,
+  action_type, count(*)
+FROM facebook WHERE action != "album_photo" AND fb_date IS NOT NULL
+GROUP BY person1, quarter, action_type;""")
+data = list(cur.fetchall())
+actions = group_by(data, group_index=2)
+excl = ['date', 'friend', 'update_profile', 'group_admined', 'message']
+actions['total'] = sum([v for k, v in actions.items() if k not in excl])
+data = [d for d in data if d[2] == 'post']
+post_balance = group_by(data, group_index=1)
 
-# Friend count data
 cur.execute("""
-select
-  cast(strftime("%Y", fb_date) as FLOAT) +
-  ((cast(strftime("%m", fb_date) as INT) - 1) / 3) / 4.0 as quarter,
-  --sum(case when action like 'accepted%' then 1 else -1 end)
-  sum(case when cohort = 'Ballston Spa' then
-    case when action like 'accepted%' then 1 else -1 end
-  else 0 end),
-  sum(case when cohort = 'Cornell' then
-    case when action like 'accepted%' then 1 else -1 end
-  else 0 end),
-  sum(case when cohort = 'Family' then
-    case when action like 'accepted%' then 1 else -1 end
-  else 0 end),
-  sum(case when cohort = 'Mindshare' then
-    case when action like 'accepted%' then 1 else -1 end
-  else 0 end)
-from facebook f
-join friends d on f.person = d.person
-where action_type = "friend"
-and action in ('accepted', 'removed', 'accepted_est')
-group by quarter
-""")
-f_data = np.array(cur.fetchall(), dtype=[
-    ('date', 'float'),
-    #('friends', 'i4'),
-    ('highschool', 'i4'),
-    ('college', 'i4'),
-    ('family', 'i4'),
-    ('firstjob', 'i4'),
-    ])
-
-# Wall Posts me vs. others
-cur.execute("""
-select
-  cast(strftime("%Y", fb_date) as FLOAT) +
-  ((cast(strftime("%m", fb_date) as INT) - 1) / 3) / 4.0 as quarter,
-  sum(case when person = 'Harrison Shore' and with is null then 1 else 0 end),
-  sum(case when person = 'Harrison Shore' and with is not null then 1 else 0 end),
-  sum(case when person != 'Harrison Shore' then 1 else 0 end)
-from facebook f
-where person is not null and action = 'post'
-group by quarter
-""")
-w_data = np.array(cur.fetchall(), dtype=[
-    ('date', 'float'),
-    ('self', 'i4'),
-    ('me', 'i4'),
-    ('friend', 'i4'),
-    ])
+SELECT
+  cast(strftime("%Y", fb_date) AS FLOAT) +
+    ((cast(strftime("%m", fb_date) AS INT) - 1) / 3) / 4.0 AS quarter,
+  cohort,
+  sum(CASE WHEN action LIKE 'accepted%' THEN 1 ELSE -1 END)
+FROM facebook f JOIN friends d ON f.person = d.person
+WHERE action_type = 'friend'
+  AND action IN ('accepted', 'removed', 'accepted_est')
+GROUP BY quarter, cohort;""")
+friends = group_by(cur.fetchall(), group_index=1)
+for k, v in friends.items():
+    friends[k] = np.cumsum(v) if k != 'date' else v
+friends['total'] = sum([v for k, v in friends.items() if k != 'date'])
 
 # Draw globals
-resolution = 1/4
 colors = {
     'post': '#4260B4',
     'comment': '#8ED66F',
@@ -97,77 +64,56 @@ colors = {
     }
 
 ### First Plot
-def init_axis(plt, ax, data):
+def init_axis(data, ytick, figsize):
+    fig, ax = plt.subplots(figsize=figsize)
     ax.set_axisbelow(True)
-    ax.yaxis.grid(color='grey', linestyle='-')
-    ax.yaxis.set_tick_params(direction='out', left=False, right=False,
-                             labelleft=False)
-    ax.xaxis.set_tick_params(direction='out', top=False)
+    ax.yaxis.grid()
+    ax.yaxis.set_tick_params(left=False, labelleft=False)
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(ytick))
     ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
-    ax.set_xlim([data['date'].min(), data['date'].max()])
+    ax.set_xlim([min(data['date']), max(data['date'])])
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_visible(False)
     plt.tight_layout()
+    return fig, ax
 
-def plot_1():
+def plot_1(data):
     # Posts v. Likes
-    fig, ax = plt.subplots(figsize=(14, 7))
+    fig, ax = init_axis(data, 100, (14, 7))
     ax.stackplot(data['date'], data['post'] + data['comment'] + data['event'],
-                 data['like'], labels=['Posts', 'Likes'], edgecolor='none',
+                 data['like'], labels=['Posts', 'Likes'],
                  colors=[colors['post'], colors['like']])
-    init_axis(plt, ax, data)
-    ax.yaxis.set_major_locator(ticker.MultipleLocator(100))
-    #ax.set_title('Facebook activity by quarter')
-
-    #plt.legend(loc='upper left')
     fig.savefig('figure_5.png')
-    plt.show()
 
-def plot_2():
+def plot_2(data):
     # Percent Likes
-    fig, ax = plt.subplots(figsize=(7, 5))
-    init_axis(plt, ax, data)
+    fig, ax = init_axis(data, 0.25, (7, 5))
     ax.fill_between(data['date'], data['like'] / data['total'],
                     color=colors['like'])
     ax.set_ylim([0, 1])
-    ax.yaxis.set_major_locator(ticker.MultipleLocator(0.25))
     fig.savefig('figure_6.png')
-    plt.show()
 
-def plot_3():
+def plot_3(data):
     # Basic friend count
-    fig, ax = plt.subplots(figsize=(7, 5))
-    init_axis(plt, ax, f_data)
-    ax.yaxis.set_major_locator(ticker.MultipleLocator(100))
-    ax.fill_between(f_data['date'], np.cumsum(f_data['friends']),
-                    color=colors['post'])
+    fig, ax = init_axis(data, 100, (7, 5))
+    ax.fill_between(data['date'], data['total'], color=colors['post'])
+    ax.set_ylim([0, data['total'].max()])
     fig.savefig('figure_7.png')
-    plt.show()
 
-def plot_4():
+def plot_4(data):
     # Grouped friend chart
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.stackplot(f_data['date'],
-                 np.cumsum(f_data['highschool']),
-                 np.cumsum(f_data['college']),
-                 np.cumsum(f_data['family']),
-                 np.cumsum(f_data['firstjob']),
-                 edgecolor='none',
+    fig, ax = init_axis(data, 100, (7, 5))
+    ax.stackplot(data['date'], data['Ballston Spa'], data['Cornell'],
+                 data['Family'], data['Mindshare'],
                  colors=[colors['like'], colors['comment'],
                          colors['post'], colors['event']])
-    init_axis(plt, ax, f_data)
-    ax.yaxis.set_major_locator(ticker.MultipleLocator(100))
     fig.savefig('figure_8.png')
-    plt.show()
 
-fig, ax = plt.subplots(figsize=(7, 5))
-ax.fill_between(w_data['date'], w_data['friend']*-1, color=colors['comment'])
-ax.stackplot(w_data['date'],
-             w_data['me'],
-             w_data['self'],
-             edgecolor='none',
-             colors=[colors['like'], colors['post']])
-init_axis(plt, ax, w_data)
-fig.savefig('figure_9.png')
-plt.show()
+def plot_5(data):
+    # Post balance
+    fig, ax = init_axis(data, 50, (7, 5))
+    ax.fill_between(data['date'], data['other']*-1, color=colors['comment'])
+    ax.stackplot(data['date'], data['me'], data['self'],
+                 colors=[colors['like'], colors['post']])
+    fig.savefig('figure_9.png')

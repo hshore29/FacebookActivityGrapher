@@ -69,6 +69,7 @@ def parse_data(action, data):
     # Comment data
     if 'comment' in d:
         action['action'] = 'comment'
+        action['action_type'] = 'comment'
         if type(d['comment']) is str:
             action['description'] = d['comment']
         elif type(d['comment']) is dict:
@@ -99,8 +100,8 @@ def parse_attachments(action, data):
             action['camera_model'] = meta.get('camera_model')
     # Notes
     if 'note' in att:
-        action['description'] = att['note']['title']
         action['action'] = 'note'
+        action['description'] = att['note']['title']
     return action
 
 def process_files():
@@ -140,7 +141,7 @@ def process_files():
     data = json.load(open('comments.json'))
     for row in data['comments']:
         com = row['data'][0]['comment']
-        yield {'action': 'comment', 'action_type': 'post',
+        yield {'action': 'comment', 'action_type': 'comment',
                'timestamp': com['timestamp'], 'person': com['author'],
                'description': com['comment'], 'fbgroup': com.get('group'),
                'title': row['title']}
@@ -236,7 +237,7 @@ def process_files():
 
         # Album Comments
         for com in data.get('comments', list()):
-            yield {'action': 'comment', 'action_type': 'post',
+            yield {'action': 'comment', 'action_type': 'comment',
                    'timestamp': com['timestamp'], 'person': com['author'],
                    'description': com['comment'], 'fbgroup': com.get('group')}
 
@@ -262,7 +263,7 @@ def process_files():
             for com in photo.get('comments', list()):
                 if com['author'] == ME:
                     continue
-                yield {'action': 'comment', 'action_type': 'post',
+                yield {'action': 'comment', 'action_type': 'comment',
                        'timestamp': com['timestamp'],
                        'person': com['author'], 'description': com['comment'],
                        'fbgroup': com.get('group')}
