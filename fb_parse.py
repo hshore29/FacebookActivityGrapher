@@ -378,7 +378,7 @@ def draw_chart(file_name, plotter, data, figsize, pct=False):
         ax.yaxis.set_major_formatter(ticker.FuncFormatter('{0:.0%}'.format))
         ax.set_ylim([0, 1])
     # If this uses negatives to show other's posts, format away the minus
-    if file_name in ('wall_posts'):
+    if file_name in ('wall_posts', 'messages'):
         ax.yaxis.set_major_formatter(ticker.FuncFormatter(
             lambda y, _: '{:,.0f}'.format(abs(y))
             ))
@@ -434,6 +434,16 @@ def post_balance(ax, data):
     handles, labels = ax.get_legend_handles_labels()
     ax.legend(handles[::-1], labels[::-1], loc='upper center')
 
+def messages(ax, data):
+    """Draw stacked area chart of messages (sent vs. recieved)."""
+    add_title(ax, 'Facebook Messages (sent vs. recieved)')
+    ax.fill_between(data['date'], data['other']*-1, color=_colors['message'],
+                    label='Messages received')
+    ax.fill_between(data['date'], data['self'], color=_colors['message'],
+                    label='Messages sent')
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(500))
+    ax.legend()
+
 if __name__ == '__main__':
     # Set paths, vars, initialize database
     print('Enter your name as it appears on Facebook')
@@ -461,6 +471,7 @@ if __name__ == '__main__':
 
         # Convert timestamps to dates
         cur.execute(SQL_FORMAT_DATES)
+        cur.execute(SQL_FORMAT_DATES_2)
         db.commit()
 
     # Create graphs folder if necessary
@@ -479,6 +490,11 @@ if __name__ == '__main__':
     excl = ['date', 'friend', 'message']
     actions['total'] = sum([v for k, v in actions.items() if k not in excl])
     draw_chart('percent_likes', pct_likes, actions, (7, 5), pct=True)
+
+    # Messages Chart
+    msg_data = [d for d in data if d[2] == 'message']
+    msgs = group_by(msg_data, group_index=1)
+    draw_chart('messages', messages, msgs, (7, 5))
 
     # Post Balance Chart
     data = [d for d in data if d[2] == 'post']

@@ -28,7 +28,11 @@ SELECT person FROM facebook WHERE action in ('accepted', 'accepted_est')
 
 SQL_FORMAT_DATES = """
 UPDATE facebook SET fb_date=datetime(timestamp, 'unixepoch')
-  WHERE timestamp IS NOT NULL;
+  WHERE timestamp IS NOT NULL AND action != 'message';
+"""
+SQL_FORMAT_DATES_2 = """
+UPDATE facebook SET fb_date=datetime(timestamp/1000, 'unixepoch')
+  WHERE timestamp IS NOT NULL AND action = 'message';
 """
 
 SQL_UPDATE_COHORT = "UPDATE friends SET cohort=? WHERE person=?;"
@@ -43,7 +47,7 @@ SELECT
       CASE WHEN with IS NULL THEN 'self' ELSE 'me' END
   ELSE 'other' END AS person1,
   action_type, count(*)
-FROM facebook WHERE action not in ('album_photo', 'message')
+FROM facebook WHERE action != 'album_photo'
   AND fb_date IS NOT NULL
 GROUP BY month, person1, action_type;"""
 
