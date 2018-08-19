@@ -41,7 +41,7 @@ SELECT
       CASE WHEN with IS NULL THEN 'self' ELSE 'me' END
   ELSE 'other' END AS person1,
   action_type, count(*)
-FROM facebook WHERE action not in ("album_photo", "message")
+FROM facebook WHERE action not in ('album_photo', 'message')
   AND fb_date IS NOT NULL
 GROUP BY month, person1, action_type;"""
 

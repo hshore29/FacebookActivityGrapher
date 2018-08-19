@@ -5,6 +5,8 @@ import sqlite3
 from collections import defaultdict
 
 import numpy as np
+from matplotlib import rcParams
+rcParams['font.sans-serif'] = ['Helvetica', 'Arial', 'sans-serif']
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
@@ -357,7 +359,7 @@ def draw_chart(file_name, plotter, data, figsize, pct=False):
     # Set axis & tick parameters
     ax.set_axisbelow(True)
     ax.yaxis.grid()
-    ax.yaxis.set_tick_params(left=False, labelleft=False)
+    ax.yaxis.set_tick_params(left=False, labelleft=True)
     ax.yaxis.set_major_locator(ticker.MultipleLocator(50))
     ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
     ax.spines['top'].set_visible(False)
@@ -368,48 +370,70 @@ def draw_chart(file_name, plotter, data, figsize, pct=False):
     # If this is a % chart, set the tick and ylimits accordingly
     if pct:
         ax.yaxis.set_major_locator(ticker.MultipleLocator(0.25))
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter('{0:.0%}'.format))
         ax.set_ylim([0, 1])
+    # If this uses negatives to show other's posts, format away the minus
+    if file_name in ('wall_posts'):
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(
+            lambda y, _: '{:,.0f}'.format(abs(y))
+            ))
     # Call plotting function
     plotter(ax, data)
     # Draw PNG
     plt.tight_layout()
     fig.savefig(file_name + '.png')
 
+def add_title(ax, t):
+    ax.set_title(t, fontdict={'fontsize': 18}, loc='left')
+
 ### Specific chart functions ###
 def posts_v_likes(ax, data):
     """Draw stacked area chart of posts vs. likes."""
+    add_title(ax, 'Timeline of Facebook activity')
+    ax.set_ylabel('Actions per month')
     ax.stackplot(data['date'], data['post'] + data['comment'] + data['event'],
-                 data['like'], labels=['Posts', 'Likes'],
-                 colors=[_colors['post'], _colors['like']])
+                 data['like'], labels=['Posts/Comments', 'Likes'],
+                 colors=[_colors['post'], _colors['like']],
+                 edgecolor='none')
+    ax.legend(loc='upper center')
 
 def pct_likes(ax, data):
     """Draw area chart of % likes."""
+    add_title(ax, 'Likes as % of activity, by month')
     ax.fill_between(data['date'], data['like'] / data['total'],
                     color=_colors['like'])
 
 def friend_count(ax, data):
     """Draw area chart of friend count."""
+    add_title(ax, 'Friends over time')
     ax.fill_between(data['date'], data['total'], color=_colors['post'])
     ax.set_ylim([0, data['total'].max()])
 
 def grouped_friend_count(ax, data):
     """Draw stacked area chart of friend cohort counts."""
+    add_title(ax, 'Friend groups over time')
     ax.stackplot(data['date'], data['Ballston Spa'], data['Cornell'],
                  data['Family'], data['Mindshare'],
-                 colors=[_colors['like'], _colors['comment'],
-                         _colors['post'], _colors['event']])
+                 labels=["High School", "College", "Family", "Work"])
+    ax.legend(loc='upper left')
 
 def post_balance(ax, data):
     """Draw stacked area chart of post balance (me vs. others)."""
-    ax.fill_between(data['date'], data['other']*-1, color=_colors['comment'])
+    add_title(ax, 'Balance of Wall Posts, by month')
+    ax.fill_between(data['date'], data['other']*-1, color=_colors['comment'],
+                    label='Posts on my wall')
     ax.stackplot(data['date'], data['me'], data['self'],
-                 colors=[_colors['like'], _colors['post']])
+                 colors=[_colors['like'], _colors['post']],
+                 labels=["My posts on other's walls",
+                         "My status updates / posts"])
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles[::-1], labels[::-1], loc='upper center')
 
 if __name__ == '__main__':
     # Set paths, vars, initialize database
     FB_DIR = '/Users/harry/Desktop/Chat Data/facebook-htshore/'
     ME = 'Harrison Shore'
-    PARSE = True
+    PARSE = False
     CHART = True
     base_dir = os.getcwd()
     db, cur = init_db(PARSE)
@@ -435,20 +459,21 @@ if __name__ == '__main__':
         db.commit()
 
     if CHART:
+        os.chdir('graphs')
         # Post vs. Likes Chart
         data = get_data(cur, SQL_GET_ACTION_DATA)
         actions = group_by(data, group_index=2)
-        draw_chart('figure_5', posts_v_likes, actions, (14, 7))
+        draw_chart('timeline', posts_v_likes, actions, (7, 5))
 
         # Percent Likes Chart
         excl = ['date', 'friend', 'message']
         actions['total'] = sum([v for k, v in actions.items() if k not in excl])
-        draw_chart('figure_6', pct_likes, actions, (7, 5), pct=True)
+        draw_chart('percent_likes', pct_likes, actions, (7, 5), pct=True)
 
         # Post Balance Chart
         data = [d for d in data if d[2] == 'post']
         posts = group_by(data, group_index=1)
-        draw_chart('figure_9', post_balance, posts, (7, 5))
+        draw_chart('wall_posts', post_balance, posts, (7, 5))
 
         # Friend Charts
         data = get_data(cur, SQL_GET_FRIEND_DATA)
@@ -456,5 +481,5 @@ if __name__ == '__main__':
         for k, v in friends.items():
             friends[k] = np.cumsum(v) if k != 'date' else v
         friends['total'] = sum([v for k, v in friends.items() if k != 'date'])
-        draw_chart('figure_7', friend_count, friends, (7, 5))
-        draw_chart('figure_8', grouped_friend_count, friends, (7, 5))
+        draw_chart('friends', friend_count, friends, (7, 5))
+        draw_chart('friends_cat', grouped_friend_count, friends, (7, 5))
