@@ -45,15 +45,15 @@ _colors = {
     'badge': '#FF0017',
     }
 
-def init_db(parse):
+def init_db():
     """Open SQLite database, create facebook table, return connection."""
     db = sqlite3.connect('facebook.sql')
     cur = db.cursor()
-    if parse:
-        cur.execute(SQL_CREATE)
-        cur.execute(SQL_DELETE)
+    cur.execute(SQL_CREATE)
     db.commit()
-    return db, cur
+    cur.execute(SQL_CHECK)
+    parse = list(cur.fetchall())[0][0] == 0
+    return db, cur, parse
 
 def parse_title(action):
     """Extract names from an action's title and update the action in place."""
@@ -146,7 +146,7 @@ def process_files():
     """
 
     # apps_and_websites
-    os.chdir(FB_DIR + 'apps_and_websites')
+    os.chdir(base_dir + 'apps_and_websites')
     data = json.load(open('posts_from_apps_and_websites.json'))
     for row in data['app_posts']:
         r = {'action': 'app_post', 'action_type': 'post', 'person': ME,
@@ -158,7 +158,7 @@ def process_files():
         yield r
 
     # comments
-    os.chdir(FB_DIR + 'comments')
+    os.chdir(base_dir + 'comments')
     data = json.load(open('comments.json'))
     for row in data['comments']:
         com = row['data'][0]['comment']
@@ -168,7 +168,7 @@ def process_files():
                'title': row['title']}
 
     # events
-    os.chdir(FB_DIR + 'events')
+    os.chdir(base_dir + 'events')
     data = json.load(open('event_invitations.json'))
     for row in data['events_invited']:
         yield {'action': 'was_invited', 'action_type': 'event',
@@ -191,7 +191,7 @@ def process_files():
                'timestamp': row['start_timestamp'], 'description': row['name']}
 
     # friends
-    os.chdir(FB_DIR + 'friends')
+    os.chdir(base_dir + 'friends')
     data = json.load(open('friends.json'))
     for row in data['friends']:
         yield {'action': 'accepted', 'action_type': 'friend',
@@ -214,14 +214,14 @@ def process_files():
                'timestamp': row['timestamp'], 'person': row['name']}
 
     # groups
-    os.chdir(FB_DIR + 'groups')
+    os.chdir(base_dir + 'groups')
     data = json.load(open('your_groups.json'))
     for row in data['groups_admined']:
         yield {'action': 'group_admined', 'action_type': 'group_admined',
                'timestamp': row['timestamp'], 'description': row['name']}
 
     # likes_and_reactions
-    os.chdir(FB_DIR + 'likes_and_reactions')
+    os.chdir(base_dir + 'likes_and_reactions')
     data = json.load(open('pages.json'))
     for row in data['page_likes']:
         yield {'action': 'like_page', 'action_type': 'like',
@@ -236,7 +236,7 @@ def process_files():
                'person': react['actor']}
 
     # messages
-    os.chdir(FB_DIR + 'messages')
+    os.chdir(base_dir + 'messages')
     for chat in os.listdir():
         if chat == 'stickers_used':
             continue
@@ -248,7 +248,7 @@ def process_files():
                    'thread': chat, 'description': row.get('content')}
 
     # photos
-    os.chdir(FB_DIR + 'photos_and_videos/album')
+    os.chdir(base_dir + 'photos_and_videos/album')
     for album in os.listdir():
         data = json.load(open(album))
         # Photo Album
@@ -290,7 +290,7 @@ def process_files():
                        'fbgroup': com.get('group')}
 
     # posts
-    os.chdir(FB_DIR + 'posts')
+    os.chdir(base_dir + 'posts')
     data1 = json.load(open('your_posts.json'))
     data2 = json.load(open("other_people's_posts_to_your_timeline.json"))
     posts = data1['status_updates'] + data2['wall_posts_sent_to_you']
@@ -304,7 +304,7 @@ def process_files():
         yield r
 
     # profile_information
-    os.chdir(FB_DIR + 'profile_information')
+    os.chdir(base_dir + 'profile_information')
     data = json.load(open('profile_update_history.json'))
     for row in data['profile_updates']:
         r = {'action': 'update_profile', 'action_type': 'update_profile',
@@ -325,6 +325,11 @@ def insert_row(cur, data):
 def _prompt_cohort(db, cur):
     cur.execute(SQL_GET_BLANK_COHORT)
     friends = cur.fetchall()
+    if friends:
+        print("Group friends by how you met them")
+        print("i.e. High School, Family, College, First Job, etc.")
+        print("Each friend will be prompted, type the same group for")
+        print("all friends that should be grouped together.")
     for f in friends:
         name = f[0]
         cohort = input(name + ': ')
@@ -412,9 +417,9 @@ def friend_count(ax, data):
 def grouped_friend_count(ax, data):
     """Draw stacked area chart of friend cohort counts."""
     add_title(ax, 'Friend groups over time')
-    ax.stackplot(data['date'], data['Ballston Spa'], data['Cornell'],
-                 data['Family'], data['Mindshare'],
-                 labels=["High School", "College", "Family", "Work"])
+    labs = [k for k in data.keys() if k not in ('date', 'total')]
+    ydat = [data[k] for k in labs]
+    ax.stackplot(data['date'], ydat, labels=labs)
     ax.legend(loc='upper left')
 
 def post_balance(ax, data):
@@ -431,14 +436,14 @@ def post_balance(ax, data):
 
 if __name__ == '__main__':
     # Set paths, vars, initialize database
-    FB_DIR = '/Users/harry/Desktop/Chat Data/facebook-htshore/'
-    ME = 'Harrison Shore'
+    print('Enter your name as it appears on Facebook')
+    ME = input('Name: ')
     PARSE = False
-    CHART = True
     base_dir = os.getcwd()
-    db, cur = init_db(PARSE)
+    db, cur, parse = init_db()
 
-    if PARSE:
+    if parse:
+        print('Processing Facebook activity data')
         # Load Facebook activity into database
         for i in process_files():
             insert_row(cur, parse_title(i))
@@ -458,28 +463,33 @@ if __name__ == '__main__':
         cur.execute(SQL_FORMAT_DATES)
         db.commit()
 
-    if CHART:
-        os.chdir('graphs')
-        # Post vs. Likes Chart
-        data = get_data(cur, SQL_GET_ACTION_DATA)
-        actions = group_by(data, group_index=2)
-        draw_chart('timeline', posts_v_likes, actions, (7, 5))
+    # Create graphs folder if necessary
+    os.chdir(base_dir)
+    if 'graphs' not in os.listdir():
+        os.mkdir('graphs')
+    os.chdir('graphs')
+    print('Drawing charts of Facebook activity data')
 
-        # Percent Likes Chart
-        excl = ['date', 'friend', 'message']
-        actions['total'] = sum([v for k, v in actions.items() if k not in excl])
-        draw_chart('percent_likes', pct_likes, actions, (7, 5), pct=True)
+    # Post vs. Likes Chart
+    data = get_data(cur, SQL_GET_ACTION_DATA % ME)
+    actions = group_by(data, group_index=2)
+    draw_chart('timeline', posts_v_likes, actions, (7, 5))
 
-        # Post Balance Chart
-        data = [d for d in data if d[2] == 'post']
-        posts = group_by(data, group_index=1)
-        draw_chart('wall_posts', post_balance, posts, (7, 5))
+    # Percent Likes Chart
+    excl = ['date', 'friend', 'message']
+    actions['total'] = sum([v for k, v in actions.items() if k not in excl])
+    draw_chart('percent_likes', pct_likes, actions, (7, 5), pct=True)
 
-        # Friend Charts
-        data = get_data(cur, SQL_GET_FRIEND_DATA)
-        friends = group_by(data, group_index=1)
-        for k, v in friends.items():
-            friends[k] = np.cumsum(v) if k != 'date' else v
-        friends['total'] = sum([v for k, v in friends.items() if k != 'date'])
-        draw_chart('friends', friend_count, friends, (7, 5))
-        draw_chart('friends_cat', grouped_friend_count, friends, (7, 5))
+    # Post Balance Chart
+    data = [d for d in data if d[2] == 'post']
+    posts = group_by(data, group_index=1)
+    draw_chart('wall_posts', post_balance, posts, (7, 5))
+
+    # Friend Charts
+    data = get_data(cur, SQL_GET_FRIEND_DATA)
+    friends = group_by(data, group_index=1)
+    for k, v in friends.items():
+        friends[k] = np.cumsum(v) if k != 'date' else v
+    friends['total'] = sum([v for k, v in friends.items() if k != 'date'])
+    draw_chart('friends', friend_count, friends, (7, 5))
+    draw_chart('friends_cat', grouped_friend_count, friends, (7, 5))
